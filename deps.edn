@@ -1,0 +1,25 @@
+{:paths   ["src"]
+ :deps    {org.clojure/clojure {:mvn/version "1.10.3"}}
+ :aliases {
+           ;; -- Testing
+           ;; clojure -M:test:runner-clj
+           ;; clojure -M:test
+           :test {:extra-paths ["test"]
+                  :extra-deps  {org.clojure/test.check    {:mvn/version "1.0.0"}
+                                com.cognitect/test-runner {:git/url "https://github.com/cognitect-labs/test-runner"
+                                                           :git/sha "b6b3193fcc42659d7e46ecd1884a228993441182"}}
+                  :main-opts ["-m" "cognitect.test-runner"
+                              "-d" "test"]}
+           ;;
+           ;; clojure -M:cider-clj
+           :cider-clj {:extra-paths ["test"] ; needed to hack on the settings
+                       ;;
+                       :extra-deps  {nrepl/nrepl       {:mvn/version "0.8.3"}
+                                     cider/cider-nrepl {:mvn/version "0.25.4"}}
+                       :main-opts   ["-m"           "nrepl.cmdline"
+                                     "--middleware" "[cider.nrepl/cider-middleware]"]}
+           ;;
+           ;; - start an interactive REPL with a headless nREPL server
+           ;; clojure -M:nrepl
+           :nrepl {:extra-deps {nrepl/nrepl {:mvn/version "0.8.3"}}
+                   :main-opts  ["-m" "nrepl.cmdline" "-i"]}}}
