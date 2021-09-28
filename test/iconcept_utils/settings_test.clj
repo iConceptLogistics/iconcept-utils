@@ -31,6 +31,26 @@
             :value-2 :value-2
             :config  :config-1}))
 
+    (is (= (load-settings :env-1 [:settings-2 :settings-1])
+           {:value-1 :value-1
+            :value-2 :value-2
+            :config  :config-1}))
+
+    (is (= (load-settings :env-1 :settings-2 [:settings-1])
+           {:value-1 :value-1
+            :value-2 :value-2
+            :config  :config-1}))
+
+    (is (= (load-settings :env-1 :settings-2 :settings-1 [])
+           {:value-1 :value-1
+            :value-2 :value-2
+            :config  :config-1}))
+
+    (is (= (load-settings :env-1 :settings-2 :settings-1 [nil] nil)
+           {:value-1 :value-1
+            :value-2 :value-2
+            :config  :config-1}))
+
     (is (= (load-settings :env-1 :settings-1 :settings-2)
            {:value-1 :value-3
             :value-2 :value-4
