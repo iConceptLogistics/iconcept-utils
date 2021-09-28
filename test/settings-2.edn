@@ -1,0 +1,12 @@
+{:shared {:common   {:value-1 :value-3
+                     :value-2 :value-4}
+          :config-1 {:config :config-1}
+          :config-2 {:config nil}}
+ :envs {:env-1 {:uses [:common :config-1]}
+        :env-2 {:uses [:common :config-1 :config-2]}
+        :env-3 {:uses [:common :config-1 :config-2]
+                :config :config}
+        ;;
+        ;; This has bad :uses values
+        :env-4 {:uses [:common :no-here]
+                :config :me}}}
