@@ -3,7 +3,9 @@
 
 (defn read-settings
   [settings]
-  (some-> (str (name settings) ".edn")
+  (some-> settings
+          name
+          (str ".edn")
           io/resource
           slurp
           clojure.edn/read-string))
@@ -29,8 +31,12 @@
                         setting-keys
                         [setting-keys])
                       flatten
-                      (remove nil?)
-                      (map read-settings))
+                      (map read-settings)
+                      ;; They can pass setting-keys that don't
+                      ;; correspond to edn files, we just ignore them.
+                      ;; This allows for a local override file to be
+                      ;; used if it exists.
+                      (remove nil?))
          shared  (->> (map :shared envs)
                       (apply merge))
          ;;
