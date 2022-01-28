@@ -82,12 +82,11 @@
   (sql-dates<-java-time)
   (sql-dates->java-time))
 
-(defn kw->enum
-  [enum-type enum-value]
-  (when enum-value
+(defn make-pg-object
+  [object-type object-value]
     (doto (PGobject.)
-      (.setType  (-> enum-type  ->screaming-snake-case-string))
-      (.setValue (-> enum-value name)))))
+    (.setType  (name object-type))
+    (.setValue object-value)))
 
 ;;; --------------------------------------------------------------------------------
 
