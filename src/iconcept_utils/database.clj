@@ -12,9 +12,7 @@
             ;;
             [oberon.utils :refer [->kebab-case-keyword ->snake-case-string ->screaming-snake-case-string]]
             [spectacular.core :as sp])
-  (:import [org.postgresql.util PGobject]
-           [java.time LocalDate Instant]
-           [java.sql
+  (:import [java.sql
             Date Timestamp
             Array
             Clob
@@ -22,7 +20,10 @@
             ResultSet ResultSetMetaData
             Statement
             SQLException]
-           [java.time LocalDate Instant]))
+           [org.postgresql.util PGobject]
+           ;;
+           [java.time LocalDate Instant]
+           [java.time.format DateTimeFormatter]))
 
 ;;; --------------------------------------------------------------------------------
 
@@ -32,25 +33,45 @@
   (swap! tmp (constantly value)))
 
 ;;; --------------------------------------------------------------------------------
+;;  Simple value converters
 
-;;; FIXME: Need to add set-from-java-util-time and read-as-java-util-time.
+(def +yyyy-mm-dd+ (DateTimeFormatter/ofPattern "yyyy-MM-dd"))
+
+(defn yyyy-mm-dd->ld
+  [^String ld]
+  (LocalDate/parse ld))
+
+(defn ld->yyyy-mm-dd
+  [^LocalDate ld]
+  (.format ld +yyyy-mm-dd+))
+
+;;; --------------------------------------------------------------------------------
+
+(defn make-pg-object
+  [object-type object-value]
+  (doto (PGobject.)
+    (.setType  (name object-type))
+    (.setValue object-value)))
+
+(def get-pg-value (memfn getValue))
+(def get-pg-type  (memfn getType))
+
+;;; --------------------------------------------------------------------------------
+;;  Coercion for java.time objects.
+;;
+;;  The java.util.Date and friend classes are explicitly excluded from
+;;  these coercions as new code bases shouldn't be using those date
+;;  types.  It's preferable that usage of them will throw errors.
 
 (defn sql-dates<-java-time
   []
   (extend-protocol p/SettableParameter
-    LocalDate (set-parameter [^java.time.LocalDate v ^PreparedStatement s ^long i] (.setDate      s i (Date/valueOf   v)))
-    Instant   (set-parameter [^java.time.Instant   v ^PreparedStatement s ^long i] (.setTimestamp s i (Timestamp/from v)))
-
-    ;; I want usage of java.util.Date to cause an error, we shouldn't
-    ;; have any of these in our code from now on.
+    LocalDate (set-parameter [^LocalDate v ^PreparedStatement s ^long i] (.setDate      s i (Date/valueOf   v)))
+    Instant   (set-parameter [^Instant   v ^PreparedStatement s ^long i] (.setTimestamp s i (Timestamp/from v)))
     ;;
-    ;; java.util.Date
-    ;; (set-parameter [^java.util.Date v ^PreparedStatement s ^long i]
-    ;;   (.setTimestamp s i (Timestamp/from (.toInstant v))))
-
     ;; Avoid unnecessary conversions
-    java.sql.Date      (set-parameter [^java.sql.Date      v ^PreparedStatement s ^long i] (.setDate      s i v))
-    java.sql.Timestamp (set-parameter [^java.sql.Timestamp v ^PreparedStatement s ^long i] (.setTimestamp s i v))))
+    java.sql.Date      (set-parameter [^Date      v ^PreparedStatement s ^long i] (.setDate      s i v))
+    java.sql.Timestamp (set-parameter [^Timestamp v ^PreparedStatement s ^long i] (.setTimestamp s i v))))
 
 (defn sql-dates->java-time
   []
@@ -85,12 +106,6 @@
   (sql-dates<-java-time)
   (sql-dates->java-time))
 
-(defn make-pg-object
-  [object-type object-value]
-    (doto (PGobject.)
-    (.setType  (name object-type))
-    (.setValue object-value)))
-
 ;;; --------------------------------------------------------------------------------
 
 (def ^:dynamic *datasource*)
@@ -114,52 +129,83 @@
          (binding [*transaction* tx#]
            ~@body)))))
 
-#_
-(defmacro in-transaction [& body]
-  `(jdbc/with-transaction [tx# *connection*]
-     ~@body))
-
 ;;; --------------------------------------------------------------------------------
+;;  Custom PG type handling
+;;
 
-(defn make-pg-object
-  [object-type object-value]
-  (doto (PGobject.)
-    (.setType  (name object-type))
-    (.setValue object-value)))
+(def +date-range-type+ "daterange")
 
-(defn ->ltree
+(defn date-range->pg-object
+  [dr]
+  (make-pg-object :daterange
+                  (str "["
+                       (some-> (.from dr) ld->yyyy-mm-dd)
+                       ","
+                       (some-> (.to dr) ld->yyyy-mm-dd)
+                       "]")))
+
+(deftype DateRange [from to]
+  p/SettableParameter
+  (set-parameter [this s i] (.setObject s i (date-range->pg-object this))))
+
+(defn make-date-range
+  "Only makes inclusive ranges like; [], if you want exclusive ranges
+  then you'll need to add/subtract a day from the from/to values."
+  [from to]
+  (let [coerce-day (fn [v]
+                     (if (string? v)
+                       (yyyy-mm-dd->ld v)
+                       v))]
+    (when (not (or from to))
+      (throw (ex-info (format "DateRanges require a `from` and/or `to` date, got: %s %s." from to) {:from from :to to})))
+    (DateRange. (coerce-day from)
+                (coerce-day to))))
+
+(defn pg-object->date-range
+  "Takes something like `[YYYY-MM-DD,YYYY-MM-DD)` and turns it back into a DateRange."
   [v]
-  (make-pg-object :ltree v))
+  ;; FIXME: TODO actually parse it back into something.
+  (get-pg-value v))
 
 ;;;
 
-(def get-pg-value (memfn getValue))
-(def get-pg-type  (memfn getType))
+(def +ltree-type+ "ltree")
+
+(defn ltree->pg-object
+  [v]
+  (make-pg-object :ltree (:path v)))
+
+(deftype LTree [path]
+  p/SettableParameter
+  (set-parameter [this s i] (.setObject s i (ltree->pg-object this))))
+
+(defn make-ltree
+  [path]
+  (->LTree path))
+
+(defn pg-object->ltree
+  [v]
+  (make-ltree (get-pg-value v)))
+
+;;;
 
 (defn pg-object->clj
   [^PGobject v]
   (condp = (get-pg-type v)
-    "ltree"     (get-pg-value v)
-    ;; "daterange" FIXME: create a java.time/Period object out of this.
+    +ltree-type+      (pg-object->ltree      v)
+    +date-range-type+ (pg-object->date-range v)
     ;;
     ;; What about all of the other GIS objects?
     :else (do
             (log/warn (str "No translator for: PGobject/" (get-pg-type v) "."))
             v)))
 
-(extend-protocol rs/ReadableColumn
-  PGobject
-  (read-column-by-label [^PGobject v _]          (pg-object->clj v))
-  (read-column-by-index [^PGobject v rsmeta idx] (pg-object->clj v)))
-
-(defn to-sql-array
-  [pg-type coll]
-  (when (seq coll)
-    (.createArrayOf *connection* pg-type (to-array coll))))
-
-(defn pg-array?
-  [x]
-  (instance? org.postgresql.jdbc.PgArray x))
+(defn pg-objects->clj-records
+  []
+  (extend-protocol rs/ReadableColumn
+    PGobject
+    (read-column-by-label [^PGobject v _]          (pg-object->clj v))
+    (read-column-by-index [^PGobject v rsmeta idx] (pg-object->clj v))))
 
 ;;; --------------------------------------------------------------------------------
 
@@ -237,6 +283,16 @@
 (defn get-name      [k] (sp/-get k ::name))
 (defn get-type      [k] (sp/-get k ::type))
 (defn get->db-value [k] (sp/-get k ::->db-value))
+
+(defn to-sql-array
+  [pg-type coll]
+  (when (seq coll)
+    (.createArrayOf *connection* pg-type (to-array coll))))
+
+#_
+(defn pg-array?
+  [x]
+  (instance? org.postgresql.jdbc.PgArray x))
 
 (defn record->sql
   [record & {:keys [db-names?]}]
