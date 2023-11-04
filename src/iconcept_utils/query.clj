@@ -3,8 +3,7 @@
             ;;
             [honey.sql         :as sql]
             [honey.sql.helpers :as h]
-            ;;
-            ;; [oberon.utils :refer [nil-when->>]]
+            [honey.sql.pg-ops :refer [<at at>]]
             ;;
             [spectacular.core :as sp]
             ;;
@@ -18,19 +17,12 @@
 ;;; --------------------------------------------------------------------------------
 ;;  Honeysql Helpers
 
-(def <at (keyword "<@"))
-(def at> (keyword "@>"))
-
-(sql/register-op! <at)
-(sql/register-op! at>)
-
 (defn like%
   [v]
-;;; FIXME: workout how to replace this with an extention to honeysql
-;;; so we can just use [:ilike% :field "value"] and it'll stick the
-;;; % in.
+  ;; FIXME: workout how to replace this with an extention to honeysql
+  ;; so we can just use [:ilike% :field "value"] and it'll stick the
+  ;; % in.
   (str "%" v "%"))
-
 
 ;;; --------------------------------------------------------------------------------
 
