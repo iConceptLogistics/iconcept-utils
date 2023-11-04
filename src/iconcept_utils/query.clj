@@ -6,7 +6,7 @@
             [honey.sql.pg-ops :refer [<at at>]]
             ;;
             [spectacular.core :as sp]
-            ;;
+            [oberon.utils :refer [prefix-keyword]]
             [iconcept-utils.database :as db]))
 
 ;;; --------------------------------------------------------------------------------
@@ -28,6 +28,15 @@
 
 (def order-by* #(apply h/order-by %1 %2))
 (def group-by* #(apply h/group-by %1 %2))
+
+(defn select*
+  ([prefix colls]
+   (select* nil prefix colls))
+  ([sql prefix colls]
+   (->> colls
+        (map #(prefix-keyword prefix %))
+        (into (if sql [sql] []))
+        (apply h/select))))
 
 (defn page-by
   [sql {{:keys [index size]} :paging}]
