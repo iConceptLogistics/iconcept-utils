@@ -116,9 +116,11 @@
         (throw (ex-info "Failed to find exactly 1 record."
                         {:kind kind :matching matching}))))))
 
+;;;
+
 (defn entity-present?
   [entity-type entity & {:keys [matching]}]
-  (one (sp/-get entity-type ::db/table)
+  (one (db/get-table entity-type)
        (merge (sp/get-entity-identity entity-type entity)
               matching)))
 
