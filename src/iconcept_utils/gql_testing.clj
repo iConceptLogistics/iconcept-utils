@@ -4,7 +4,9 @@
             [clojure.walk   :refer [postwalk]]
             [clojure.java.io :as io]
             ;;
-            [cheshire.core :refer [generate-string parse-string]]
+            [cheshire.core     :refer [generate-string parse-string]]
+            [cheshire.generate :refer [add-encoder encode-str]]
+            ;;
             [camel-snake-kebab.core :as csk]
             [camel-snake-kebab.extras :as cske]
             ;;
@@ -119,6 +121,13 @@
       :else {:data  (->> data first second (cske/transform-keys csk/->kebab-case-keyword))
              :error nil})))
 
+;; There are also helpers for common encoding actions:
+(defn encode-local-date
+  "Encode a date object to the json generator."
+  [d jg]
+  (.writeString jg (.toString d)))
+
+(add-encoder java.time.LocalDate encode-local-date)
 
 (defn send-gql
   [query vars gql-request-handler & {:keys [request debug?]}]
