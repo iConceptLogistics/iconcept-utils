@@ -10,7 +10,7 @@
             [camel-snake-kebab.core :as csk]
             [camel-snake-kebab.extras :as cske]
             ;;
-            [oberon.utils :refer [->kebab-case-keyword ->snake-case-string ->screaming-snake-case-string]]
+            [oberon.utils :refer [dump-> dump->> ->kebab-case-keyword ->snake-case-string ->screaming-snake-case-string]]
             [spectacular.core :as sp])
   (:import [java.sql
             Date Timestamp
@@ -33,78 +33,17 @@
   (swap! tmp (constantly value)))
 
 ;;; --------------------------------------------------------------------------------
-;;  Simple value converters
+;;  Spectacular layer
 
-(def +yyyy-mm-dd+ (DateTimeFormatter/ofPattern "yyyy-MM-dd"))
-
-(defn yyyy-mm-dd->ld
-  [^String ld]
-  (LocalDate/parse ld))
-
-(defn ld->yyyy-mm-dd
-  [^LocalDate ld]
-  (.format ld +yyyy-mm-dd+))
-
-;;; --------------------------------------------------------------------------------
-
-(defn make-pg-object
-  [object-type object-value]
-  (doto (PGobject.)
-    (.setType  (name object-type))
-    (.setValue object-value)))
-
-(def get-pg-value (memfn getValue))
-(def get-pg-type  (memfn getType))
-
-;;; --------------------------------------------------------------------------------
-;;  Coercion for java.time objects.
-;;
-;;  The java.util.Date and friend classes are explicitly excluded from
-;;  these coercions as new code bases shouldn't be using those date
-;;  types.  It's preferable that usage of them will throw errors.
-
-(defn sql-dates<-java-time
-  []
-  (extend-protocol p/SettableParameter
-    LocalDate (set-parameter [^LocalDate v ^PreparedStatement s ^long i] (.setDate      s i (Date/valueOf   v)))
-    Instant   (set-parameter [^Instant   v ^PreparedStatement s ^long i] (.setTimestamp s i (Timestamp/from v)))
-    ;;
-    ;; Avoid unnecessary conversions
-    java.sql.Date      (set-parameter [^Date      v ^PreparedStatement s ^long i] (.setDate      s i v))
-    java.sql.Timestamp (set-parameter [^Timestamp v ^PreparedStatement s ^long i] (.setTimestamp s i v))))
-
-(defn sql-dates->java-time
-  []
-  (extend-protocol rs/ReadableColumn
-    Array
-    (read-column-by-label [^Array v _]        (vec (.getArray v)))
-    (read-column-by-index [^Array v rsmeta _] (vec (.getArray v)))
-    ;;
-    Date
-    (read-column-by-label [^String v _]          (.toLocalDate v))
-    (read-column-by-index [^String v rsmeta idx] (.toLocalDate v))
-    ;;
-    Timestamp
-    (read-column-by-label [^String v _]          (.toInstant v))
-    (read-column-by-index [^String v rsmeta idx] (.toInstant v))
-    ;;
-    String
-    (read-column-by-label [^String v _] v)
-    (read-column-by-index [^String v rsmeta idx]
-      (let [type-name (.getColumnTypeName rsmeta idx)]
-        (if (= type-name "text")
-          v
-          ;; It could be an enum that has a mapping.
-          (let [table-name (.getTableName rsmeta idx)]
-            ;; FIXME: do something smart and look it up here, in the
-            ;; meantime just turn it into a keyword as that'll be the
-            ;; case almost all of the time.
-            (keyword v)))))))
-
-(defn sql-dates<->java-time
-  []
-  (sql-dates<-java-time)
-  (sql-dates->java-time))
+(defn get-table [k] (or (sp/-get k ::table)
+                        (throw (ex-info (format "Failed to get DB Table Name for %s" k)
+                                        {:k k}))))
+(defn get-name  [k] (or (sp/-get k ::name)
+                        (when (sp/attr? k)
+                          (-> k sp/get-attribute-type (sp/-get ::name)))))
+(defn get-type  [k] (or (sp/-get k ::type)
+                        (when (sp/attr? k)
+                          (-> k sp/get-attribute-type (sp/-get ::type)))))
 
 ;;; --------------------------------------------------------------------------------
 
@@ -130,82 +69,191 @@
            ~@body)))))
 
 ;;; --------------------------------------------------------------------------------
+;;  Simple value converters
+
+(def +yyyy-mm-dd+ (DateTimeFormatter/ofPattern "yyyy-MM-dd"))
+
+(defn yyyy-mm-dd->ld
+  [^String ld]
+  (LocalDate/parse ld))
+
+(defn ld->yyyy-mm-dd
+  [^LocalDate ld]
+  (.format ld +yyyy-mm-dd+))
+
+
+;;; --------------------------------------------------------------------------------
+;;  WRITING TO DATABASE, INCLUDING COERCION FOR QUERIES
+
+(defn make-pg-object
+  [object-type object-value]
+  (doto (PGobject.)
+    (.setType  (name object-type))
+    (.setValue object-value)))
+
+(defn make-pg-array
+  [pg-type coll]
+  (.createArrayOf *connection* pg-type (to-array coll)))
+
+(def get-pg-value (memfn getValue))
+(def get-pg-type  (memfn getType))
+
+;;; --------------------------------------------------------------------------------
 ;;  Custom PG type handling
-;;
 
-(def +date-range-type+ "daterange")
+(defn make-enum
+  [enum-type enum-value]
+  (make-pg-object (csk/->SCREAMING_SNAKE_CASE_STRING enum-type) (name enum-value)))
 
-(defn date-range->pg-object
-  [dr]
+(defn make-daterange
+  [[from to]]
   (make-pg-object :daterange
                   (str "["
-                       (some-> (.from dr) ld->yyyy-mm-dd)
+                       (some-> from ld->yyyy-mm-dd)
                        ","
-                       (some-> (.to dr) ld->yyyy-mm-dd)
+                       (some-> to ld->yyyy-mm-dd)
                        "]")))
 
-(deftype DateRange [from to]
-  p/SettableParameter
-  (set-parameter [this s i] (.setObject s i (date-range->pg-object this))))
-
-(defn make-date-range
-  "Only makes inclusive ranges like; [], if you want exclusive ranges
-  then you'll need to add/subtract a day from the from/to values."
-  [from to]
-  (let [coerce-day (fn [v]
-                     (if (string? v)
-                       (yyyy-mm-dd->ld v)
-                       v))]
-    (when (not (or from to))
-      (throw (ex-info (format "DateRanges require a `from` and/or `to` date, got: %s %s." from to) {:from from :to to})))
-    (DateRange. (coerce-day from)
-                (coerce-day to))))
-
-(defn pg-object->date-range
-  "Takes something like `[YYYY-MM-DD,YYYY-MM-DD)` and turns it back into a DateRange."
-  [v]
-  ;; FIXME: TODO actually parse it back into something.
-  (get-pg-value v))
-
-;;;
-
-(def +ltree-type+ "ltree")
-
-(defn ltree->pg-object
-  [v]
-  (make-pg-object :ltree (:path v)))
-
-(deftype LTree [path]
-  p/SettableParameter
-  (set-parameter [this s i] (.setObject s i (ltree->pg-object this))))
+;;; FIXME: Add these ranges in too
+;; int4range — Range of integer, int4multirange — corresponding Multirange
+;; int8range — Range of bigint, int8multirange — corresponding Multirange
+;; numrange — Range of numeric, nummultirange — corresponding Multirange
+;; tsrange — Range of timestamp without time zone, tsmultirange — corresponding Multirange
+;; tstzrange — Range of timestamp with time zone, tstzmultirange — corresponding Multirange
 
 (defn make-ltree
-  [path]
-  (->LTree path))
-
-(defn pg-object->ltree
   [v]
-  (make-ltree (get-pg-value v)))
+  (make-pg-object :ltree v))
 
 ;;;
 
-(defn pg-object->clj
-  [^PGobject v]
-  (condp = (get-pg-type v)
-    +ltree-type+      (pg-object->ltree      v)
-    +date-range-type+ (pg-object->date-range v)
-    ;;
-    ;; What about all of the other GIS objects?
-    :else (do
-            (log/warn (str "No translator for: PGobject/" (get-pg-type v) "."))
-            v)))
+(defmulti clj->array (fn [array-type v options]
+                       array-type))
 
-(defn pg-objects->clj-records
-  []
+(defmethod clj->array :default
+  [_ v options]
+  nil)
+
+(defmethod clj->array java.lang.String
+  [_ v options]
+  (make-array "TEXT" v))
+
+(defmethod clj->array java.lang.Integer
+  [_ v options]
+  (make-array "INT" v))
+
+(defmethod clj->array java.lang.Long
+  [_ v options]
+  (make-array "INT" v))
+
+(defmethod clj->array java.util.Date
+  [_ v options]
+  (->> v
+       (map #(Date/valueOf %))
+       (make-array "DATE")))
+
+(defmethod clj->array java.time.LocalDate
+  [_ v options]
+  (->> v
+       (map #(Date/valueOf %))
+       (make-array "DATE")))
+
+(defmethod clj->array java.time.Instant
+  [_ v options]
+  (->> v
+       (map #(Timestamp/valueOf %))
+       (make-array "TIMESTAMP")))
+
+(defn clj->array*
+  [v {:keys [k domain] :as options}]
+  (or (some-> (get-type k) (clj->array v options))
+      ;;
+      (when (and domain k) (clj->array [domain k] v options))
+      (when k              (clj->array k          v options))
+      (when domain         (clj->array domain     v options))
+      (clj->array (-> v first type) v options)
+      v))
+
+(defn arrayable?
+  [v]
+  (or (vector? v) (list? v)))
+
+;;;
+
+(defmulti clj->db (fn [type-info v {:as options}]
+                    type-info))
+
+(defmethod clj->db :default
+  [_ v _]
+  nil)
+
+(defmethod clj->db java.util.Date
+  [_ v _]
+  (Date/valueOf v))
+
+(defmethod clj->db java.time.LocalDate
+  [_ v _]
+  (Date/valueOf v))
+
+(defmethod clj->db java.time.Instant
+  [_ v _]
+  (Timestamp/valueOf v))
+
+(defmethod clj->db clojure.lang.Keyword
+  [_ v {:keys [k enum-type]}]
+  (if-let [enum-type (or enum-type (get-type k))]
+    (make-enum enum-type v)
+    (name v)))
+
+(defn clj->db*
+  [v {:keys [k domain] :as options}]
+  (or (some-> (get-type k) (clj->db v options))
+      (when (and domain k) (clj->db [domain k] v options))
+      (when k              (clj->db k          v options))
+      (when domain         (clj->db domain     v options))
+      (clj->db (type v) v options)
+      v))
+
+(defn record->row
+  [record & {:keys [domain db-names?]}]
+  (->> record
+       (map (fn [[k v]]
+              (when v
+               (let [options {:k k :domain domain}]
+                 [(or (and db-names? (get-name k))
+                      ;; Rows don't know about namespaces.
+                      (keyword (name k)))
+                  (if (arrayable? v)
+                    (clj->array* v options)
+                    (clj->db*    v options))]))))
+       (into {})))
+
+;;; --------------------------------------------------------------------------------
+;;; READING FROM DATABASE
+
+(defmulti read-object (fn [object-type object]
+                        object-type))
+
+(defmethod read-object :default
+  [object-type object]
+  (log/warn (format "No read-object method found for: `%s`." object-type))
+  object)
+
+(defmethod read-object :ltree
+  [_ v]
+  (get-pg-value v))
+
+(let [object-reader (fn [object]
+                      (read-object (-> object get-pg-type keyword) object))]
   (extend-protocol rs/ReadableColumn
     PGobject
-    (read-column-by-label [^PGobject v _]          (pg-object->clj v))
-    (read-column-by-index [^PGobject v rsmeta idx] (pg-object->clj v))))
+    (read-column-by-label [^PGobject object _]          (object-reader object))
+    (read-column-by-index [^PGobject object rsmeta idx] (object-reader object))))
+
+#_
+(defn pg-array?
+  [x]
+  (instance? org.postgresql.jdbc.PgArray x))
 
 ;;; --------------------------------------------------------------------------------
 
@@ -275,84 +323,12 @@
   (sql/delete! *connection* (->snake-case-string tablename) (as-pg-map where)))
 
 ;;; --------------------------------------------------------------------------------
-;;  Spectacular layer
-
-(defn get-table     [k] (or (sp/-get k ::table)
-                            (throw (ex-info (format "Failed to get DB Table Name for %s" k)
-                                            {:k k}))))
-(defn get-name      [k] (sp/-get k ::name))
-(defn get-type      [k] (sp/-get k ::type))
-(defn get->db-value [k] (sp/-get k ::->db-value))
-
-(defn to-sql-array
-  [pg-type coll]
-  (when (seq coll)
-    (.createArrayOf *connection* pg-type (to-array coll))))
-
-#_
-(defn pg-array?
-  [x]
-  (instance? org.postgresql.jdbc.PgArray x))
-
-(defn record->sql
-  [record & {:keys [db-names?]}]
-  (let [key->q (fn [k]
-                 ;; Remove namespace for destructuring in query
-                 ;; module.
-                 (-> k name keyword))
-        get-key (if db-names?
-                  #(or (get-name %)
-                       (key->q   %))
-                  key->q)]
-    (->> record
-         (map (fn [[k v]]
-                (let [v-type  (if (sp/attr? k)
-                                (sp/get-attribute-type k)
-                                k)
-                      ;; The database type can be registered on the
-                      ;; attribute or the scalar so check both but
-                      ;; preference the attribute.
-                      db-type    (or (get-type k)
-                                     (get-type v-type))
-                      ->db-value (get->db-value v-type)]
-                  [(get-key k)
-                   (cond
-                     (nil? v) nil
-                     ;;
-                     (and (sp/enum? v-type) (set? v))
-                     (to-sql-array (csk/->SCREAMING_SNAKE_CASE_STRING (or db-type v-type))
-                                   (map name v))
-
-                     (sp/enum? v-type)
-                     (make-pg-object (csk/->SCREAMING_SNAKE_CASE_STRING (or db-type v-type))
-                                     (name v))
-                     ;;
-                     (and db-type ->db-value)
-                     (make-pg-object db-type (->db-value v))
-                     ;;
-                     ->db-value (->db-value v)
-                     ;;
-                     (= db-type :text-array) (to-sql-array "TEXT" v)
-                     ;;
-                     db-type
-                     (make-pg-object db-type v)
-                     ;;
-                     ;; Do after db-type as it may coerce keywords to pg enums.
-                     (keyword? v) (name v)
-                     ;;
-                     (or (seq? v) (vector? v)) (when-let [head (first v)]
-                                                 (cond
-                                                   (string?  head) (to-sql-array "TEXT"    v)
-                                                   (integer? head) (to-sql-array "INTEGER" v)
-                                                   :else nil))
-                     ;;
-                     :else v)])))
-         (into {}))))
 
 (defn get-identity
   [entity-key record]
   (or (some-> (sp/get-entity-identity entity-key record)
-              (record->sql :db-names? true))
+              (record->row :domain    (get-table entity-key)
+                           :db-names? true))
       (throw (ex-info (format "Failed to extract identity for %s" entity-key)
                       {:record record}))))
 
@@ -361,7 +337,8 @@
   (some-> (merge (or values
                      (sp/get-entity-values entity-key record))
                  extras)
-          (record->sql :db-names? true)))
+          (record->row :domain    (get-table entity-key)
+                       :db-names? true)))
 
 ;;;
 
@@ -379,7 +356,7 @@
                                     :record     record
                                     :values     values
                                     :extras     extras})))]
-    (update-rows (get-table    entity-key)
+    (update-rows (get-table entity-key)
                  values
                  (get-identity entity-key record))))
 
@@ -390,7 +367,8 @@
                         (map (fn [[id-field-key new-value-key]]
                                [id-field-key (get record new-value-key)]))
                         (into {}))
-                   (record->sql :db-names? true))
+                   (record->row :domain    (get-table entity-key)
+                                :db-names? true))
                (get-identity entity-key record)))
 
 (defn remove-entity
