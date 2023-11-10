@@ -143,59 +143,6 @@
 
 ;;;
 
-(defmulti clj->array (fn [array-type v options]
-                       array-type))
-
-(defmethod clj->array :default
-  [_ v options]
-  nil)
-
-(defmethod clj->array java.lang.String
-  [_ v options]
-  (make-array "TEXT" v))
-
-(defmethod clj->array java.lang.Integer
-  [_ v options]
-  (make-array "INT" v))
-
-(defmethod clj->array java.lang.Long
-  [_ v options]
-  (make-array "INT" v))
-
-(defmethod clj->array java.util.Date
-  [_ v options]
-  (->> v
-       (map #(Date/valueOf %))
-       (make-array "DATE")))
-
-(defmethod clj->array java.time.LocalDate
-  [_ v options]
-  (->> v
-       (map #(Date/valueOf %))
-       (make-array "DATE")))
-
-(defmethod clj->array java.time.Instant
-  [_ v options]
-  (->> v
-       (map #(Timestamp/valueOf %))
-       (make-array "TIMESTAMP")))
-
-(defn clj->array*
-  [v {:keys [k domain] :as options}]
-  (or (some-> (get-type k) (clj->array v options))
-      ;;
-      (when (and domain k) (clj->array [domain k] v options))
-      (when k              (clj->array k          v options))
-      (when domain         (clj->array domain     v options))
-      (clj->array (-> v first type) v options)
-      v))
-
-(defn arrayable?
-  [v]
-  (or (vector? v) (list? v)))
-
-;;;
-
 (defmulti clj->db (fn [type-info v {:as options}]
                     type-info))
 
@@ -205,7 +152,7 @@
 
 (defmethod clj->db java.util.Date
   [_ v _]
-  (Date/valueOf v))
+  (java-date->sql v))
 
 (defmethod clj->db java.time.LocalDate
   [_ v _]
@@ -221,12 +168,30 @@
     (make-enum enum-type v)
     (name v)))
 
+(defmethod clj->db :text-array
+  [_ v options]
+  (make-array "TEXT" v))
+
+(defmethod clj->db :int-array
+  [_ v options]
+  (make-array "INT" v))
+
+(defmethod clj->db :date-array
+  [_ v options]
+  (make-array "DATE" (map #(clj->db (type v) v nil) v)))
+
+(defmethod clj->db :instant-array
+  [_ v options]
+  (make-array "DATE" (map #(clj->db (type v) v nil) v)))
+
 (defn clj->db*
   [v {:keys [k domain] :as options}]
-  (or (some-> (get-type k) (clj->db v options))
-      (when (and domain k) (clj->db [domain k] v options))
+  (or (when (and domain k) (clj->db [domain k] v options))
       (when k              (clj->db k          v options))
       (when domain         (clj->db domain     v options))
+      ;; Can we extra a db-type from the sp/attr?
+      (some-> (get-type k) (clj->db v options))
+      ;; Finally try the clojure type of the value.
       (clj->db (type v) v options)
       v))
 
@@ -239,9 +204,7 @@
                  [(or (and db-names? (get-name k))
                       ;; Rows don't know about namespaces.
                       (keyword (name k)))
-                  (if (arrayable? v)
-                    (clj->array* v options)
-                    (clj->db*    v options))]))))
+                  (clj->db* v options)]))))
        (into {})))
 
 ;;; --------------------------------------------------------------------------------
