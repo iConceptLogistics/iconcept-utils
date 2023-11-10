@@ -22,7 +22,7 @@
             SQLException]
            [org.postgresql.util PGobject]
            ;;
-           [java.time LocalDate Instant]
+           [java.time LocalDate Instant ZoneId]
            [java.time.format DateTimeFormatter]))
 
 ;;; --------------------------------------------------------------------------------
@@ -72,15 +72,31 @@
 ;;  Simple value converters
 
 (def +yyyy-mm-dd+ (DateTimeFormatter/ofPattern "yyyy-MM-dd"))
-
-(defn yyyy-mm-dd->ld
-  [^String ld]
-  (LocalDate/parse ld))
+(def +yyyymmdd+   (DateTimeFormatter/ofPattern "yyyyMMdd"))
 
 (defn ld->yyyy-mm-dd
   [^LocalDate ld]
   (.format ld +yyyy-mm-dd+))
 
+(defn yyyy-mm-dd->ld
+  [s]
+  (LocalDate/parse s +yyyy-mm-dd+))
+
+(defn ld->yyyymmdd
+  [ld]
+  (.format ld +yyyy-mm-dd+))
+
+(defn yyyymmdd->ld
+  [s]
+  (LocalDate/parse s +yyyymmdd+))
+
+(defn java-date->sql
+  [jd]
+  (let [ld (.. jd
+               toInstant
+               (atZone (ZoneId/of "UTC"))
+               toLocalDate)]
+    (Date/valueOf ld)))
 
 ;;; --------------------------------------------------------------------------------
 ;;  WRITING TO DATABASE, INCLUDING COERCION FOR QUERIES
