@@ -1,6 +1,7 @@
 (ns iconcept-utils.gql-testing
   (:require [clojure.test :refer :all]
             [clojure.string :as s]
+            [clojure.pprint :refer [pprint]]
             [clojure.walk   :refer [postwalk]]
             [clojure.java.io :as io]
             ;;
@@ -142,12 +143,10 @@
                 :else (throw (ex-info "Query can't be used." {:query query})))
 
         vars  (clj->vars vars)
-        body  (-> {:query     query
-                   :variables vars}
-                  generate-string)]
+        body  (generate-string {:query query :variables vars})]
     (when debug?
       (println query)
-      (println (generate-string vars)))
+      (println (generate-string vars {:pretty true})))
     (-> (gql-request-handler (assoc request :body (java.io.StringReader. body)))
         :body parse-response)))
 
