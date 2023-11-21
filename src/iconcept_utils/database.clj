@@ -189,7 +189,7 @@
   (or (when (and domain k) (clj->db [domain k] v options))
       (when k              (clj->db k          v options))
       (when domain         (clj->db domain     v options))
-      ;; Can we extra a db-type from the sp/attr?
+      ;; Can we extract a db-type from the sp/attr?
       (some-> (get-type k) (clj->db v options))
       ;; Finally try the clojure type of the value.
       (clj->db (type v) v options)
