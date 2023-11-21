@@ -160,7 +160,7 @@
 
 (defmethod clj->db java.time.Instant
   [_ v _]
-  (Timestamp/valueOf v))
+  (Timestamp/from v))
 
 (defmethod clj->db clojure.lang.Keyword
   [_ v {:keys [k enum-type]}]
