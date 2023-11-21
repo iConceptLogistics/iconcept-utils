@@ -322,22 +322,39 @@
 ;;;
 
 (defn add-entity
-  [entity-key record & {:keys [values extras]}]
-  (insert-row (get-table entity-key)
-              (merge (get-identity entity-key record)
-                     (get-values   entity-key record values extras))))
-
-(defn modify-entity
-  [entity-key record & {:keys [values extras]}]
-  (let [values (or (get-values   entity-key record values extras)
+  [entity-key record & {:keys [values extras debug?]}]
+  (let [table  (get-table entity-key)
+        token  (get-identity entity-key record)
+        values (or (get-values   entity-key record values extras)
                    (throw (ex-info (format "Failed to extract values for %s" entity-key)
                                    {:entity-key entity-key
                                     :record     record
                                     :values     values
                                     :extras     extras})))]
-    (update-rows (get-table entity-key)
-                 values
-                 (get-identity entity-key record))))
+    (when debug?
+      (log/info (format "Add Entity for: `%s`" entity-key))
+      (log/info (format "...table: %s" table))
+      (log/info (format "...token: %s" token))
+      (log/info (format "...values: %s" values)))
+    (insert-row table
+                (merge token values))))
+
+(defn modify-entity
+  [entity-key record & {:keys [values extras debug?]}]
+  (let [table  (get-table entity-key)
+        token  (get-identity entity-key record)
+        values (or (get-values   entity-key record values extras)
+                   (throw (ex-info (format "Failed to extract values for %s" entity-key)
+                                   {:entity-key entity-key
+                                    :record     record
+                                    :values     values
+                                    :extras     extras})))]
+    (when debug?
+      (log/info (format "Modify Entity for: `%s`" entity-key))
+      (log/info (format "...table: %s" table))
+      (log/info (format "...token: %s" token))
+      (log/info (format "...values: %s" values)))
+    (update-rows table values token)))
 
 (defn rename-entity
   [entity-key record field-keys->new-field-keys]
