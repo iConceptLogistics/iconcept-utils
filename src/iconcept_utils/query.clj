@@ -119,9 +119,10 @@
 ;;;
 
 (defn entity-present?
-  [entity-type entity & {:keys [matching]}]
-  (one (db/get-table entity-type)
-       (merge (sp/get-entity-identity entity-type entity)
-              matching)))
+  [entity-type entity & {:keys [matching debug?]}]
+  (let [table    (db/get-table entity-type)
+        matching (merge (sp/get-entity-identity entity-type entity)
+                        matching)]
+    (one table matching :debug? debug?)))
 
 (def entity-absent? (complement entity-present?))
