@@ -6,6 +6,7 @@
             [next.jdbc.sql        :as sql]
             [next.jdbc.prepare    :as p]
             [next.jdbc.result-set :as rs]
+            [next.jdbc.date-time  :as jdbc-dt]
             ;;
             [camel-snake-kebab.core :as csk]
             [camel-snake-kebab.extras :as cske]
@@ -31,6 +32,11 @@
 (defn-   ^:private set-tmp!
   [value]
   (swap! tmp (constantly value)))
+
+;;; --------------------------------------------------------------------------------
+;;  Default config for dates, extended by jdbc.next.
+
+(jdbc-dt/read-as-local)
 
 ;;; --------------------------------------------------------------------------------
 ;;  Spectacular layer
@@ -129,6 +135,19 @@
                        ","
                        (some-> to ld->yyyy-mm-dd)
                        "]")))
+
+(defn read-daterange
+  [pgobj]
+  ;; "[2023-11-06,2023-11-28)"
+  ;; "[2023-11-06,)"
+  ;; "[,2023-11-28)"
+  (let [[from to] (-> pgobj
+                      get-pg-value
+                      (s/split #","))
+        from (some->> from (drop 1) seq (apply str) yyyy-mm-dd->ld)
+        to   (some-> (some->> to   butlast  seq (apply str) yyyy-mm-dd->ld)
+                     (.plusDays -1))]
+    [from to]))
 
 ;;; FIXME: Add these ranges in too
 ;; int4range — Range of integer, int4multirange — corresponding Multirange
