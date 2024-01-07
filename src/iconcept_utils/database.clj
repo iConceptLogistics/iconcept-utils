@@ -1,5 +1,7 @@
 (ns iconcept-utils.database
   (:require [clojure.string :as s]
+            [clojure.core.memoize :as m]
+            ;;
             [taoensso.timbre :as log]
             ;;
             [next.jdbc            :as jdbc]
@@ -11,8 +13,8 @@
             [camel-snake-kebab.core :as csk]
             [camel-snake-kebab.extras :as cske]
             ;;
-            [oberon.utils :refer [dump-> dump->> ->kebab-case-keyword ->snake-case-string ->screaming-snake-case-string]]
-            [spectacular.core :as sp])
+            [oberon.utils :refer [dump-> dump->>]]
+            [onespot.core :as osc])
   (:import [java.sql
             Date Timestamp
             Array
@@ -39,17 +41,23 @@
 (jdbc-dt/read-as-local)
 
 ;;; --------------------------------------------------------------------------------
-;;  Spectacular layer
+;;  Onespot layer
 
-(defn get-table [k] (or (sp/-get k ::table)
-                        (throw (ex-info (format "Failed to get DB Table Name for %s" k)
-                                        {:k k}))))
-(defn get-name  [k] (or (sp/-get k ::name)
-                        (when (sp/attr? k)
-                          (-> k sp/get-attribute-type (sp/-get ::name)))))
-(defn get-type  [k] (or (sp/-get k ::type)
-                        (when (sp/attr? k)
-                          (-> k sp/get-attribute-type (sp/-get ::type)))))
+(defn get-table
+  [entity-id]
+  (or (-> (osc/rec entity-id) ::table)
+      (throw (ex-info (format "Failed to get DB Table for %s" entity-id)
+                      {:entity-id entity-id}))))
+
+(defn get-name
+  [entity-id]
+  (when (osc/attr? entity-id)
+    (-> (osc/attr entity-id) ::name)))
+
+(defn get-kind
+  [entity-id]
+  (when (osc/attr? entity-id)
+    (-> (osc/attr-entity entity-id) ::kind)))
 
 ;;; --------------------------------------------------------------------------------
 
@@ -123,9 +131,10 @@
 ;;; --------------------------------------------------------------------------------
 ;;  Custom PG type handling
 
-(defn make-enum
-  [enum-type enum-value]
-  (make-pg-object (csk/->SCREAMING_SNAKE_CASE_STRING enum-type) (name enum-value)))
+(def make-enum
+  (let [f (fn [enum-type enum-value]
+            (make-pg-object (csk/->SCREAMING_SNAKE_CASE_STRING enum-type) (name enum-value)))]
+    (m/fifo f {} :fifo/threshold 1024)))
 
 (defn make-daterange
   [[from to]]
@@ -162,68 +171,70 @@
 
 ;;;
 
-(defmulti clj->db (fn [type-info v {:as options}]
-                    type-info))
+(defmulti clj->db (fn [v] (type v)))
 
 (defmethod clj->db :default
-  [_ v _]
-  nil)
+  [v]
+  v)
 
 (defmethod clj->db java.util.Date
-  [_ v _]
+  [v]
   (java-date->sql v))
 
 (defmethod clj->db java.time.LocalDate
-  [_ v _]
+  [v]
   (Date/valueOf v))
 
 (defmethod clj->db java.time.Instant
-  [_ v _]
+  [v]
   (Timestamp/from v))
 
 (defmethod clj->db clojure.lang.Keyword
-  [_ v {:keys [k enum-type]}]
-  (if-let [enum-type (or enum-type (get-type k))]
-    (make-enum enum-type v)
-    (name v)))
+  [v]
+  (name v))
 
-(defmethod clj->db :text-array
-  [_ v options]
+;;;
+
+(defmulti entity->db (fn [kind v]
+                       (:type kind)))
+
+(defmethod entity->db :enum
+  [{:keys [enum-type]} v]
+  (make-enum enum-type v))
+
+(defmethod entity->db :text-array
+  [kind v]
   (make-array "TEXT" v))
 
-(defmethod clj->db :int-array
-  [_ v options]
+(defmethod entity->db :text-array
+  [kind v]
+  (make-array "TEXT" v))
+
+(defmethod entity->db :int-array
+  [kind v]
   (make-array "INT" v))
 
-(defmethod clj->db :date-array
-  [_ v options]
-  (make-array "DATE" (map #(clj->db (type v) v nil) v)))
+(defmethod entity->db :date-array
+  [kind v]
+  (make-array "DATE" (map clj->db v)))
 
-(defmethod clj->db :instant-array
-  [_ v options]
-  (make-array "DATE" (map #(clj->db (type v) v nil) v)))
+(defmethod entity->db :instant-array
+  [kind v]
+  ;; FIXME:: Should these be TIMESTAMPS?
+  (make-array "TIMESTAMPTZ" (map clj->db v)))
 
-(defn clj->db*
-  [v {:keys [k domain] :as options}]
-  (or (when (and domain k) (clj->db [domain k] v options))
-      (when k              (clj->db k          v options))
-      (when domain         (clj->db domain     v options))
-      ;; Can we extract a db-type from the sp/attr?
-      (some-> (get-type k) (clj->db v options))
-      ;; Finally try the clojure type of the value.
-      (clj->db (type v) v options)
-      v))
+;;;
 
 (defn record->row
   [record & {:keys [domain db-names?]}]
   (->> record
-       (map (fn [[k v]]
-              (when v
-               (let [options {:k k :domain domain}]
-                 [(or (and db-names? (get-name k))
-                      ;; Rows don't know about namespaces.
-                      (keyword (name k)))
-                  (clj->db* v options)]))))
+       (map (fn [[entity-id v]]
+              (when-not (nil? v)
+                [(or (and db-names? (get-name entity-id))
+                     entity-id)
+                 (if-let [db-kind (get-kind entity-id)]
+                   (entity->db db-kind v)
+                   (clj->db    v))])))
        (into {})))
 
 ;;; --------------------------------------------------------------------------------
@@ -258,12 +269,12 @@
 (defn get-column-names
   [^ResultSetMetaData rsmeta]
   (mapv (fn [^Integer i]
-          (let [type  (-> (.getColumnTypeName rsmeta i) ->kebab-case-keyword)
+          (let [type  (-> (.getColumnTypeName rsmeta i) csk/->kebab-case-keyword)
                 label (.getColumnLabel rsmeta i)]
             (-> (case type
                   :bool (str label "?")
                   label)
-                ->kebab-case-keyword)))
+                csk/->kebab-case-keyword)))
         (range 1 (inc (.getColumnCount rsmeta)))))
 
 (defn as-sane-maps
@@ -275,7 +286,7 @@
 (defn as-pg-map
   [m]
   (if (map? m)
-    (cske/transform-keys ->snake-case-string m)
+    (cske/transform-keys csk/->snake_case_string m)
     ;; Otherwise it's probably a vector of [SQL-STRING params...]
     m))
 
@@ -308,34 +319,34 @@
 
 (defn insert-row
   [tablename record]
-  (sql/insert! *connection* (->snake-case-string tablename) (as-pg-map record)))
+  (sql/insert! *connection* (csk/->snake_case_string tablename) (as-pg-map record)))
 
 (defn update-rows
   "Woefully inefficient way of getting data but will suffice for now."
   [tablename record where]
-  (sql/update! *connection* (->snake-case-string tablename) (as-pg-map record) (as-pg-map where)))
+  (sql/update! *connection* (csk/->snake_case_string tablename) (as-pg-map record) (as-pg-map where)))
 
 (defn delete-rows
   "Woefully inefficient way of getting data but will suffice for now."
   [tablename where]
-  (sql/delete! *connection* (->snake-case-string tablename) (as-pg-map where)))
+  (sql/delete! *connection* (csk/->snake_case_string tablename) (as-pg-map where)))
 
 ;;; --------------------------------------------------------------------------------
 
 (defn get-identity
-  [entity-key record]
-  (or (some-> (sp/get-entity-identity entity-key record)
-              (record->row :domain    (get-table entity-key)
+  [entity-id record]
+  (or (some-> (osc/rec-identity entity-id record)
+              (record->row :domain    (get-table entity-id)
                            :db-names? true))
-      (throw (ex-info (format "Failed to extract identity for %s" entity-key)
+      (throw (ex-info (format "Failed to extract identity for %s" entity-id)
                       {:record record}))))
 
 (defn get-values
-  [entity-key record values extras]
+  [entity-id record values extras]
   (some-> (merge (or values
-                     (sp/get-entity-values entity-key record))
+                     (osc/rec-values entity-id record))
                  extras)
-          (record->row :domain    (get-table entity-key)
+          (record->row :domain    (get-table entity-id)
                        :db-names? true)))
 
 ;;;

@@ -5,8 +5,8 @@
             [honey.sql.helpers :as h]
             [honey.sql.pg-ops :refer [<at at>]]
             ;;
-            [spectacular.core :as sp]
             [oberon.utils :refer [prefix-keyword]]
+            [onespot.core :as osc]
             [iconcept-utils.database :as db]))
 
 ;;; --------------------------------------------------------------------------------
@@ -119,9 +119,9 @@
 ;;;
 
 (defn entity-present?
-  [entity-type entity & {:keys [matching debug?]}]
-  (let [table    (db/get-table entity-type)
-        matching (merge (sp/get-entity-identity entity-type entity)
+  [entity-id record & {:keys [matching debug?]}]
+  (let [table    (db/get-table entity-id)
+        matching (merge (osc/rec-identity entity-id record)
                         matching)]
     (one table matching :debug? debug?)))
 
