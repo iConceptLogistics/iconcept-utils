@@ -133,7 +133,8 @@
 
 (def make-enum
   (let [f (fn [enum-type enum-value]
-            (make-pg-object (csk/->SCREAMING_SNAKE_CASE_STRING enum-type) (name enum-value)))]
+            (when enum-value
+              (make-pg-object (csk/->SCREAMING_SNAKE_CASE_STRING enum-type) (name enum-value))))]
     (m/fifo f {} :fifo/threshold 1024)))
 
 (defn make-daterange
