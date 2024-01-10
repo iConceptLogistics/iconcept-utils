@@ -218,6 +218,10 @@
   [kind v]
   (make-array "DATE" (map clj->db v)))
 
+(defmethod entity->db :date-range
+  [kind v]
+  (make-daterange v))
+
 (defmethod entity->db :instant-array
   [kind v]
   ;; FIXME:: Should these be TIMESTAMPS?
