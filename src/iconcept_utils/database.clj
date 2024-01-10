@@ -131,6 +131,11 @@
 ;;; --------------------------------------------------------------------------------
 ;;  Custom PG type handling
 
+(defn as-db-name
+  [k]
+  (let [n (-> (name k) (s/replace "?" ""))]
+   (csk/->snake_case_keyword n)))
+
 (def make-enum
   (let [f (fn [enum-type enum-value]
             (when enum-value
@@ -235,11 +240,19 @@
   (->> record
        (map (fn [[entity-id v]]
               (when-not (nil? v)
-                [(or (and db-names? (get-name entity-id))
-                     entity-id)
-                 (if-let [db-kind (get-kind entity-id)]
-                   (entity->db db-kind v)
-                   (clj->db    v))])))
+                (cond
+                  (nil? v) nil
+                  ;;
+                  (osc/registered? entity-id)
+                  [(or (and db-names? (get-name entity-id))
+                       entity-id)
+                   (if-let [db-kind (get-kind entity-id)]
+                     (entity->db db-kind v)
+                     (clj->db    v))]
+                  ;;
+                  :else [(or (and db-names? (as-db-name entity-id))
+                             entity-id)
+                         (clj->db v)]))))
        (into {})))
 
 ;;; --------------------------------------------------------------------------------
