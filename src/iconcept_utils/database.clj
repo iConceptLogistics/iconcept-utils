@@ -416,6 +416,6 @@
                (get-identity entity-key record)))
 
 (defn remove-entity
-  [entity-key record]
-  (delete-rows (get-table    entity-key)
-               (get-identity entity-key record)))
+  [entity-id record]
+  (delete-rows (get-table    entity-id)
+               (get-identity entity-id record)))
