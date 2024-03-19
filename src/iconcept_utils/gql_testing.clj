@@ -25,46 +25,97 @@
           io/resource
           slurp))
 
+(defn fragment? [tmpl] (s/starts-with? tmpl "fragment "))
+(defn query?    [tmpl] (s/starts-with? tmpl "query "))
+(defn mutation? [tmpl] (s/starts-with? tmpl "mutation "))
+
 (defn split-graphql
   [template]
   (let [section-start (fn [line]
-                        (or (s/starts-with? line "fragment ")
-                            (s/starts-with? line "query ")
-                            (s/starts-with? line "mutation ")))
-        section-name (fn [line]
-                       (-> (re-find #"^(fragment|query|mutation)\W*(\w*)" line) (nth 2)))]
+                        (let [line (s/trim line)]
+                          (or (fragment? line)
+                              (query?    line)
+                              (mutation? line))))
+        section-name  (fn [line]
+                        (-> (re-find #"^(fragment|query|mutation)\W*(\w*)" line) (nth 2)))]
     ;;
-    (->> template
-         s/split-lines
-         ;; Don't care about indented comments with mutations
-         (remove #(s/starts-with? % "#"))
-         (remove s/blank?)
+    (->> (s/split-lines template)
          (partition-by section-start)
          (partition 2)
          (map (fn [[head body]]
-                (let [head (first head)
+                (let [head (-> head first s/trim)
+                      type (cond
+                             (fragment? head) :fragment
+                             (query?    head) :query
+                             (mutation? head) :mutation)
+                      ;;
+                      id   (->> head section-name csk/->kebab-case-keyword)
                       body (format "%s\n%s" head (s/join "\n" body))
-                      id   (->> head
-                                section-name
-                                csk/->kebab-case-keyword)]
-                  [id body])))
-         (into {}))))
+                      ;;
+                      fragments (some->> (re-seq #"\W\.{3}([^\W]*)" body)
+                                         (mapv #(-> % second csk/->kebab-case-keyword)))]
+                  {:type      type
+                   :id        id
+                   :body      body
+                   :fragments fragments}))))))
 
-(def +templates+ nil)
+(defonce +fragments+ nil)
+(defonce +templates+ nil)
+(defonce +lookups+   nil)
+
+(defn get-all-fragment-ids
+  [fragments]
+  (let [fragment-ids (atom [])]
+    (loop [queue   fragments
+           visited #{}]
+      (let [[fragment-id & queue] queue]
+        (cond
+          (nil? fragment-id) (reverse @fragment-ids)
+          ;;
+          (contains? visited fragment-id)
+          (recur queue visited)
+          ;;
+          :else
+          (do
+            (swap! fragment-ids #(conj % fragment-id))
+            (recur (concat queue (get-in +fragments+ [fragment-id :fragments]))
+                   (conj visited fragment-id))))))))
 
 (defn init-templates!
   [path]
-  (let [tmpls {:fragments (->> (load-graphql-file path :fragments) split-graphql)
-               :mutations (->> (load-graphql-file path :mutations) split-graphql)
-               :queries   (->> (load-graphql-file path :queries)   split-graphql)}]
-    (alter-var-root (var +templates+) (constantly tmpls))))
+  (let [sections (->> path
+                      io/file
+                      file-seq
+                      (map #(when (and (.isFile %)
+                                       (let [path (.getAbsolutePath %)]
+                                         (or (s/ends-with? path ".gql")
+                                             (s/ends-with? path ".graphql"))))
+                              (slurp %)))
+                      (remove empty?)
+                      (mapcat split-graphql))
+        ;;
+        fragment? #(-> % :type (= :fragment))
+        ;;
+        fragments (->> sections (filter fragment?) (map (juxt :id identity)) (into {}))
+        templates (->> sections (remove fragment?) (map (juxt :id identity)) (into {}))
+        lookups   (->> sections
+                       (filter :fragments)
+                       (map (juxt :id :body))
+                       (into {}))]
+    (alter-var-root (var +fragments+) (constantly fragments))
+    (alter-var-root (var +templates+) (constantly templates))
+    (alter-var-root (var +lookups+)   (constantly lookups))))
 
 (defn get-graphql
   [query-id]
-  ;; FIXME: add a lookup for including any required fragments and
-  ;; include them at the top.
-  (or (get-in +templates+ [:queries query-id])
-      (get-in +templates+ [:mutations query-id])))
+  (let [{:keys [body fragments] :as tmpl} (or (get +templates+ query-id)
+                                              (throw (ex-info (format "Failed to find template for `%s`" query-id)
+                                                              {:query-id query-id})))
+        fragment-ids (get-all-fragment-ids fragments)]
+    (with-out-str
+      (doseq [fragment-id fragment-ids]
+        (println (get-in +fragments+ [fragment-id :body])))
+      (println body))))
 
 ;;; --------------------------------------------------------------------------------
 
