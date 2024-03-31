@@ -40,24 +40,24 @@
                         (-> (re-find #"^(fragment|query|mutation)\W*(\w*)" line) (nth 2)))]
     ;;
     (->> (s/split-lines template)
-         (partition-by section-start)
-         (partition 2)
-         (map (fn [[head body]]
-                (let [head (-> head first s/trim)
-                      type (cond
-                             (fragment? head) :fragment
-                             (query?    head) :query
-                             (mutation? head) :mutation)
-                      ;;
-                      id   (->> head section-name csk/->kebab-case-keyword)
-                      body (format "%s\n%s" head (s/join "\n" body))
-                      ;;
-                      fragments (some->> (re-seq #"\W\.{3}([^\W]*)" body)
-                                         (mapv #(-> % second csk/->kebab-case-keyword)))]
-                  {:type      type
-                   :id        id
-                   :body      body
-                   :fragments fragments}))))))
+         (remove        #(or (s/blank? %) (re-find #"^#" %)))
+         (partition-by  section-start)
+         (partition     2)
+         (map           (fn [[head body]]
+                          (let [head (-> head first s/trim)
+                                type (cond
+                                       (fragment? head) :fragment
+                                       (query?    head) :query
+                                       (mutation? head) :mutation)
+                                id   (->> head section-name csk/->kebab-case-keyword)
+                                body (format "%s\n%s" head (s/join "\n" body))
+                                ;;
+                                fragments (some->> (re-seq #"\W\.{3}([^\W]*)" body)
+                                                   (mapv #(-> % second csk/->kebab-case-keyword)))]
+                            {:type      type
+                             :id        id
+                             :body      body
+                             :fragments fragments}))))))
 
 (defonce +fragments+ nil)
 (defonce +templates+ nil)
