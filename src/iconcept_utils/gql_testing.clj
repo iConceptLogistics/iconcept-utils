@@ -104,7 +104,8 @@
                        (into {}))]
     (alter-var-root (var +fragments+) (constantly fragments))
     (alter-var-root (var +templates+) (constantly templates))
-    (alter-var-root (var +lookups+)   (constantly lookups))))
+    (alter-var-root (var +lookups+)   (constantly lookups))
+    nil))
 
 (defn get-graphql
   [query-id]
