@@ -1,5 +1,55 @@
 (ns iconcept-utils.settings
-  (:require [clojure.java.io :as io]))
+  (:require [clojure.string :as s]
+            [clojure.java.io :as io]
+            [clojure.walk :refer [postwalk]]))
+
+(defn env-var?
+  [v]
+  (and (map? v)
+       (:env-name v)))
+
+(defn get-env-var*
+  [env-name]
+  (let [var (System/getenv env-name)]
+    (if-not (s/blank? var)
+      (s/trim var))))
+
+(defmulti get-env-var (fn [{:keys [env-type]}]
+                        env-type))
+
+(defmethod get-env-var :default
+  [{:keys [env-name default]}]
+  (or (get-env-var* env-name)
+      default))
+
+(defmethod get-env-var :integer
+  [{:keys [env-name default]}]
+  (or (some-> env-name get-env-var* Integer/parseInt)
+      default))
+
+(defn resolve-env-vars
+  [m]
+  (postwalk #(cond
+               (env-var? %) (get-env-var %)
+               :else %)
+            m))
+
+;;;
+
+(defn get-setting-value
+  [config k]
+  (let [v (get config k)]
+    (if (env-var? v)
+      (get-env-var v)
+      v)))
+
+(defn canonicalise-env-specs
+  [env-specs]
+  (->> env-specs
+       flatten
+       (remove nil?)
+       (map keyword)
+       seq))
 
 (defn read-settings
   [settings]
@@ -8,7 +58,8 @@
           (str ".edn")
           io/resource
           slurp
-          clojure.edn/read-string))
+          clojure.edn/read-string
+          resolve-env-vars))
 
 (defn load-settings
   "
@@ -38,8 +89,9 @@
          {:keys [uses] :as primary} (-> envs last (get-in [:envs env-key]))]
 
      (when-not primary
-       (throw (ex-info "Primary settings for env-key don't exist." {:env-key      env-key
-                                                                    :settings settings})))
+       (throw (ex-info (format "Primary settings for env-key do not exist in `%s`." (last settings))
+                       {:env-key  env-key
+                        :settings settings})))
      (-> (merge (reduce (fn [result k]
                           (when-not (contains? shared k)
                             (throw (ex-info "Uses key not found in shared environments."
