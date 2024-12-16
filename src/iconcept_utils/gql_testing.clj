@@ -183,9 +183,9 @@
 (add-encoder java.time.LocalDate encode-local-date)
 
 (defn send-gql
-  [query vars gql-request-handler & {:keys [request debug?]}]
-  ;; Mimic sending a request, later we can add security headers, etc,
-  ;; to the testing.
+  [query vars request-handler & {:keys [request debug?]}]
+  ;; Mimic sending a gql request, later we can add security headers,
+  ;; etc, to the testing.
   (let [query (cond
                 (keyword? query) (or (get-graphql query)
                                      (throw (ex-info (format "Graphql not found for: %s" query)
@@ -199,8 +199,20 @@
     (when debug?
       (println query)
       (println (generate-string vars {:pretty true})))
-    (-> (gql-request-handler (assoc request :body (java.io.StringReader. body)))
+    (-> (request-handler (assoc request :body (java.io.StringReader. body)))
         :body parse-response)))
+
+(defn send-export
+  [endpoint-id vars request-handler & {:keys [request params debug?]}]
+  ;; Mimic sending an export request, later we can add security
+  ;; headers, etc, to the testing.
+  (when debug?
+    (println endpoint-id)
+    (println (generate-string (clj->vars vars) {:pretty true})))
+  (request-handler (assoc request
+                          :params (merge params
+                                         {:variables (clj->vars vars)}))
+                   endpoint-id))
 
 ;;; --------------------------------------------------------------------------------
 
